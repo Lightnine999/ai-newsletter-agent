@@ -127,6 +127,7 @@ def collect(s: dict) -> dict:                  # ① 자료 수집 — 빈 노�
 
 # ── 3부 · select ─────────────────────────────────────────────
 import os
+from collections import Counter
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -147,11 +148,14 @@ class Shortlist(BaseModel):
     picks: list[Pick]
 
 BATCH, TARGET = 40, 5                           # 예선 묶음 크기, 최종 발행 건수
+SPARE = 3                                       # 20장: 본선에서 5건보다 몇 건 더 순위를 받아 둔다
+MAX_PER_SOURCE = 2                              # 20장: 매체 이름을 세서 한 매체가 다 차지하지 않게
 
 CRITERIA = ("독자는 AI를 실제 제품에 붙이는 국내 개발팀입니다.\n"
             "- 이번 주 일하는 방식이 바뀔 만한가\n"
             "- 지금 쓰는 도구·API의 가격·한도·정책이 실제로 변했나\n"
-            "버릴 것: 발표 예정·로드맵만 있는 것, MOU·투자유치·수상 같은 홍보성 소식")
+            "버릴 것: 발표 예정·로드맵만 있는 것, MOU·투자유치·수상 같은 홍보성 소식,\n"
+            "AI와 직접 관련 없는 소식(해킹 사고·코인·게임·일반 IT 기업 소식 등)")
 
 def ask_picks(items, n):
     listing = "\n".join(f"{i}. [{it['source']}] {it['title']}" for i, it in enumerate(items))
@@ -164,15 +168,34 @@ def ask_picks(items, n):
         response_format=Shortlist).choices[0].message.parsed
     return [p for p in out.picks if 0 <= p.index < len(items)]   # 없는 번호는 버린다
 
+def interleave(items):
+    # collect는 소스 순서대로 쌓아서, 그대로 자르면 한 묶음이 한두 소스로 채워진다(18장 묶음 운).
+    # 소스별로 한 건씩 번갈아 꺼내 묶음마다 여러 소스가 섞이게 한다
+    by_src = {}
+    for it in items:
+        by_src.setdefault(it["source"], []).append(it)
+    queues = list(by_src.values())
+    return [q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+
 def select(s: dict) -> dict:                   # ② 중요도 선별 — 빈 노드를 갈아 끼운다
-    items = s["collected"]
+    items = interleave(s["collected"])
     survivors = []
     for i in range(0, len(items), BATCH):       # 예선 — 묶음마다 여덟 건
         chunk = items[i:i + BATCH]
         survivors += [chunk[p.index] for p in ask_picks(chunk, 8)]
-    finals = ask_picks(survivors, TARGET)       # 본선 — 한 화면에 놓고 다섯 건
-    return {"picked": [survivors[p.index] for p in finals],
-            "log": [f"② 선별   {len(items)} → 예선 {len(survivors)} → {len(finals)}건"]}
+    finals = ask_picks(survivors, TARGET + SPARE)   # 본선 — 한 화면에 놓고 순위를 넉넉히
+    events, sources, picked = Counter(), Counter(), []
+    for p in finals:                            # 20장: 라벨과 매체를 코드로 센다
+        it = survivors[p.index]
+        if events[p.event] or sources[it["source"]] >= MAX_PER_SOURCE:
+            continue                            # 이미 나온 사건이거나 매체 상한을 넘으면 다음 후보로
+        events[p.event] += 1
+        sources[it["source"]] += 1
+        picked.append(it)
+        if len(picked) == TARGET:
+            break
+    return {"picked": picked,
+            "log": [f"② 선별   {len(items)} → 예선 {len(survivors)} → {len(picked)}건"]}
 
 # ── 4부 · report ─────────────────────────────────────────────
 import trafilatura
@@ -194,12 +217,17 @@ def extract_body(url):
     d = trafilatura.fetch_url(url)
     return trafilatura.extract(d) if d else None
 
-def draft(body):
+KO_ONLY = "\n본문이 영어여도 헤드라인·요약·왜 중요한지는 모두 한국어로만 쓰세요."
+
+def draft(body, sys=SYS):
     return client.chat.completions.parse(
         model="gpt-4.1-mini", temperature=0,
-        messages=[{"role": "system", "content": SYS},
+        messages=[{"role": "system", "content": sys},
                   {"role": "user", "content": body[:6000]}],
         response_format=Draft).choices[0].message.parsed
+
+def korean_ok(d):                               # 24장: 지켜졌는지 출력만 보고 코드로 확인한다
+    return all(re.search(r"[가-힣]", t) for t in (d.headline, d.summary))
 
 def fan_report(s: dict):                        # 기사 수만큼 워커를 펼친다
     # 44장: picked가 비면 빈 리스트라 verify·publish가 안 돌아 heartbeat가 끊긴다 → verify로 바로 간다
@@ -212,6 +240,11 @@ def report(s: ReportIn) -> dict:               # ③ 요약 — 기사 한 건�
         return {"drafted": [],
                 "log": [f"   취재 제외 {it['source']} · 본문 {len(body or '')}자"]}
     d = draft(body)
+    if not korean_ok(d):                        # 영어로 나오면 한국어 지시를 덧붙여 한 번만 다시 쓴다
+        d = draft(body, SYS + KO_ONLY)
+    if not korean_ok(d):                        # 그래도 영어면 30장처럼 버리고 로그에 남긴다
+        return {"drafted": [],
+                "log": [f"   취재 제외 {it['source']} · 한국어 아님"]}
     return {"drafted": [{**it, "body": body[:6000], **d.model_dump()}]}
 
 # ── 5부 · verify ─────────────────────────────────────────────
