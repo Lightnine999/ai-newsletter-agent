@@ -140,7 +140,8 @@ def draft(body):
         response_format=Draft).choices[0].message.parsed
 
 def fan_report(s: dict):                        # 기사 수만큼 워커를 펼친다
-    return [Send("report", {"item": it}) for it in s["picked"]]
+    # 44장: picked가 비면 빈 리스트라 verify·publish가 안 돌아 heartbeat가 끊긴다 → verify로 바로 간다
+    return [Send("report", {"item": it}) for it in s["picked"]] or "verify"
 
 def report(s: ReportIn) -> dict:               # ③ 요약 — 기사 한 건을 맡는다
     it = s["item"]
@@ -229,11 +230,14 @@ def publish(s: dict) -> dict:                  # ⑤ 발행 — 마지막 빈 �
              "url": a["url"], "source": a["source"], "topic": a.get("event", ""),
              "when": a["at"].strftime("%m-%d %H:%M")} for a in s["verified"]]
     today = datetime.now().strftime("%Y-%m-%d")
+    dry_run = os.environ.get("DRY_RUN", "1") == "1"                 # 기본은 보내지 않음
     sent = send(today, make_lead(arts), arts,
                 webhook=os.environ.get("DISCORD_WEBHOOK_URL"),
-                dry_run=os.environ.get("DRY_RUN", "1") == "1")   # 기본은 보내지 않음
+                dry_run=dry_run)
     label = f"{len(arts)}건" if arts else "조용합니다"
-    return {"log": [f"⑤ 발행   {label} · {'보냄' if sent else 'dry-run'}"]}
+    # sent가 False인 경우가 둘이라 나눠 적는다: 일부러 안 보냄(dry-run) / 보내려다 실패
+    result = "보냄" if sent else ("dry-run" if dry_run else "실패")
+    return {"log": [f"⑤ 발행   {label} · {result}"]}
 
 def build():                                    # 노드를 이름으로 찾아 붙인다
     g = StateGraph(Brief)
@@ -241,7 +245,7 @@ def build():                                    # 노드를 이름으로 찾아 
         g.add_node(name, globals()[name])
     g.add_edge(START, "collect")
     g.add_edge("collect", "select")
-    g.add_conditional_edges("select", fan_report, ["report"])  # ← 고정 엣지가 아니라 팬아웃
+    g.add_conditional_edges("select", fan_report, ["report", "verify"])  # ← 팬아웃, 0건이면 verify로
     g.add_edge("report", "verify")
     g.add_edge("verify", "publish")
     g.add_edge("publish", END)
