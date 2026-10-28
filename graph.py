@@ -150,8 +150,9 @@ class Shortlist(BaseModel):
 BATCH, TARGET = 40, 5                           # 예선 묶음 크기, 최종 발행 건수
 SPARE = 3                                       # 20장: 본선에서 5건보다 몇 건 더 순위를 받아 둔다
 MAX_PER_SOURCE = 2                              # 20장: 매체 이름을 세서 한 매체가 다 차지하지 않게
-# 9장 tier: 우선 소스는 본선 순위에 못 들어도 예선 통과분에서 먼저 자리를 받는다 (검수는 그대로)
-PRIORITY_MIN = {"AI타임스": 2}                  # 우선 소스 · 최소 보장 건수 (상한은 MAX_PER_SOURCE)
+# 우선 소스는 발행 자리가 아니라 '본선 진출'만 보장한다. 예선 묶음 운에 떨어져도 본선에서
+# 다른 기사와 한 화면에 놓고 비교받게 하고, 더 좋은 기사가 있으면 본선이 그쪽을 고른다 (17장)
+FINALIST_MIN = {"AI타임스": 2}                  # 우선 소스 · 본선 후보로 최소 몇 건을 올릴지
 BACKUP = {"전자신문", "ZDNet Korea"}            # 종합 IT 피드 · AI타임스가 막힌 날 한국어 자리를 메우는 보조
 BACKUP_MAX = 1                                  # 보조 소스는 합쳐서 이만큼만
 
@@ -192,47 +193,31 @@ def select(s: dict) -> dict:                   # ② 중요도 선별 — 빈 �
     for i in range(0, len(items), BATCH):       # 예선 — 묶음마다 여덟 건
         chunk = items[i:i + BATCH]
         survivors += [{**chunk[p.index], "event": p.event} for p in ask_picks(chunk, 8)]
+    for src, need in FINALIST_MIN.items():      # 우선 소스가 예선에서 모자라면 그 소스끼리 순위를 매겨 본선에 올린다
+        have = sum(it["source"] == src for it in survivors)
+        used = {it["url"] for it in survivors}
+        pool = [it for it in s["collected"] if it["source"] == src and it["url"] not in used]
+        if have < need and pool:
+            survivors += [{**pool[p.index], "event": p.event} for p in ask_picks(pool, need - have)]
+
     finals = ask_picks(survivors, TARGET + SPARE)   # 본선 — 한 화면에 놓고 순위를 넉넉히
     ranked = [{**survivors[p.index], "event": p.event} for p in finals]
     in_ranked = {it["url"] for it in ranked}
-    # 우선 소스는 본선 순위에 없어도 예선 통과분(묶음 안 순위 순)에서 끌어온다
-    extra = [it for it in survivors if it["source"] in PRIORITY_MIN and it["url"] not in in_ranked]
-    for src, need in PRIORITY_MIN.items():
-        have = sum(it["source"] == src for it in ranked + extra)
-        if have >= need:
-            continue
-        # 예선에서도 모자라면 그 소스 기사끼리만 따로 순위를 매긴다 (9장: 경쟁 없이 올리되 기준은 같게)
-        used = in_ranked | {it["url"] for it in extra}
-        pool = [it for it in s["collected"] if it["source"] == src and it["url"] not in used]
-        if pool:
-            extra += [{**pool[p.index], "event": p.event} for p in ask_picks(pool, need * 2)]
+    rest = [it for it in survivors if it["url"] not in in_ranked]
 
     events, sources, picked = Counter(), Counter(), []
-    def take(it):                               # 20장: 라벨과 매체를 코드로 센다
+    for it in ranked + rest:                    # 본선 순위대로, 모자라면 예선 통과분에서
+        if len(picked) >= TARGET:
+            break
+        if events[it["event"]] or not room_for(it["source"], sources):
+            continue                            # 20장: 같은 사건이거나 매체 상한이면 다음 후보로
         events[it["event"]] += 1
         sources[it["source"]] += 1
         picked.append(it)
 
-    for src, need in PRIORITY_MIN.items():      # ① 우선 소스 최소 보장 먼저
-        for it in (x for x in ranked + extra if x["source"] == src):
-            if sources[src] >= need:
-                break
-            if not events[it["event"]]:
-                take(it)
-    in_extra = {it["url"] for it in extra}
-    rest = [it for it in survivors if it["url"] not in in_ranked | in_extra]
-    for it in ranked + rest:                    # ② 남은 자리는 본선 순위대로, 모자라면 예선 통과분에서
-        if len(picked) >= TARGET:
-            break
-        if it in picked or events[it["event"]] or not room_for(it["source"], sources):
-            continue                            # 이미 뽑혔거나 같은 사건이거나 매체 상한이면 다음 후보로
-        take(it)
-
-    order = {it["url"]: i for i, it in enumerate(ranked + extra + rest)}
-    picked.sort(key=lambda it: order[it["url"]])    # 발행 순서는 본선 순위를 따른다
-    pri = ", ".join(f"{k} {sources[k]}" for k in PRIORITY_MIN)
+    fin = ", ".join(f"{k} 본선 {sum(it['source'] == k for it in survivors)}·발행 {sources[k]}" for k in FINALIST_MIN)
     return {"picked": picked,
-            "log": [f"② 선별   {len(items)} → 예선 {len(survivors)} → {len(picked)}건 ({pri})"]}
+            "log": [f"② 선별   {len(items)} → 예선 {len(survivors)} → {len(picked)}건 ({fin})"]}
 
 # ── 4부 · report ─────────────────────────────────────────────
 import trafilatura
