@@ -30,8 +30,9 @@ def make(i: int, source: str = "S", hours_ago: int = 1, title: str | None = None
 class FakeLLM:
     """요청 스키마에 따라 정해진 답을 돌려준다. bad_ids의 요약은 원문에 없는 숫자를 넣는다."""
 
-    def __init__(self, bad_ids: set[str] = frozenset()):
+    def __init__(self, bad_ids: set[str] = frozenset(), same_story: set[str] = frozenset()):
         self.bad_ids = bad_ids
+        self.same_story = same_story  # 이 id들은 같은 소식으로 묶어 준다
         self.calls: dict[str, int] = {}
 
     def parse(self, system, user, schema):
@@ -41,6 +42,12 @@ class FakeLLM:
             # 뒤쪽 번호일수록 높은 점수, 그리고 없는 id 하나를 지어낸다
             scores = [Score(article_id=x, dev_impact=min(5, n), novelty=3, credibility=3, reason="r") for n, x in enumerate(ids)]
             return schema(scores=scores + [Score(article_id="ghost", dev_impact=5, novelty=5, credibility=5, reason="r")])
+        if schema.__name__ == "StoryGroups":
+            ids = [line.split("article_id=")[1].split(" ")[0] for line in user.splitlines()]
+            dup = [x for x in ids if x in self.same_story]
+            groups = [{"story": "dup", "article_ids": dup}] if len(dup) > 1 else []
+            # 없는 id를 지어내도 무시되어야 함
+            return schema(groups=groups + [{"story": "ghost", "article_ids": ["ghost", "ghost2"]}])
         if schema is Summary:
             bad = any(b in user for b in self.bad_ids)
             return Summary(what="가격이 999% 내렸다." if bad else "128 토큰 문맥, 40% 저렴.", why="비용 절감.", action="가격표 확인.")
@@ -79,6 +86,18 @@ def test_pick_keeps_source_diversity_and_order():
     chosen = pick(arts, scores, 4)
     assert [a.source for a in chosen] == ["A", "A", "B", "B"]
     assert max(sum(a.source == s for a in chosen) for s in "AB") <= MAX_PER_SOURCE
+
+
+def test_pick_skips_second_article_of_same_story():
+    # A0과 B0은 매체만 다른 같은 소식 → 점수가 높은 A0만 남아야 함
+    arts = [make(i, src) for src in "AB" for i in range(3)]
+    scores = {a.id: Score(article_id=a.id, dev_impact=5 if a.title.startswith("New AI model release number 0") else 1,
+                          novelty=1, credibility=1, reason="") for a in arts}
+    a0, b0 = arts[0], arts[3]
+    scores[a0.id] = scores[a0.id].model_copy(update={"novelty": 5})
+    story_of = {a0.id: "genie-4", b0.id: "genie-4"}
+    chosen = pick(arts, scores, 3, story_of)
+    assert a0 in chosen and b0 not in chosen
 
 
 # ---------- 검수 ----------
@@ -123,6 +142,16 @@ def test_graph_replaces_rejected_with_reserve(monkeypatch, tmp_path):
     assert len(final["rejected"]) == 2
     assert len(final["verified"]) == 5
     assert not first_two & {it.article.url for it in final["verified"]}
+
+
+def test_graph_does_not_publish_same_story_twice(monkeypatch, tmp_path):
+    # 처음 실행에서 뽑힌 1·2위를 같은 소식으로 묶으면, 둘 중 하나만 발행되어야 함
+    probe, _ = run(FakeLLM(), monkeypatch, tmp_path)
+    top_two = {it.article.id for it in probe["verified"][:2]}
+    final, _ = run(FakeLLM(same_story=top_two), monkeypatch, tmp_path)
+    published = {it.article.id for it in final["verified"]}
+    assert len(published) == 5
+    assert len(top_two & published) == 1
 
 
 def test_collect_survives_one_dead_source(monkeypatch, tmp_path):

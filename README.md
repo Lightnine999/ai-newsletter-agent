@@ -11,7 +11,7 @@ START → collect → select → report → verify → publish → END
 | 노드 | 하는 일 | 파일 |
 |------|---------|------|
 | collect | RSS 8곳 + Hacker News API에서 모으고 관문으로 거름 | `newsletter/nodes/collect.py`, `newsletter/sources.py` |
-| select | 규칙 예선 → LLM 채점 → 규칙 결선(소스당 2건)으로 5건 + 예비 3건 | `newsletter/nodes/select.py` |
+| select | 규칙 예선 → LLM 채점 → 같은 소식 묶기 → 규칙 결선(소스당 2건, 소식당 1건)으로 5건 + 예비 3건 | `newsletter/nodes/select.py` |
 | report | 원문 본문(trafilatura)을 읽고 **무슨 일 / 왜 중요 / 우리 팀은** 세 칸 요약 | `newsletter/nodes/report.py` |
 | verify | 숫자 대조(규칙) + 주장 대조(LLM)로 원문에 없는 내용 걸러냄 | `newsletter/nodes/verify.py` |
 | publish | Discord 웹훅 전송 + `output/날짜.md` 저장 | `newsletter/nodes/publish.py` |
@@ -21,6 +21,7 @@ START → collect → select → report → verify → publish → END
 ## 설계 포인트
 
 - **LLM은 점수만, 선택은 코드가** — select에서 LLM은 기사마다 `dev_impact·novelty·credibility`를 매기고, 최종 5건은 코드가 총점과 다양성 규칙으로 골라요. 그래서 결과를 재현하고 테스트하기 쉬워요. LLM이 없는 id를 지어내면 버려요.
+- **같은 소식은 한 번만** — 매체마다 제목이 달라서 URL·제목 비교로는 중복을 못 잡아요(실제로 Genie 4 발표가 TechCrunch와 The Verge에서 둘 다 뽑혔어요). 그래서 상위 후보를 한 번에 LLM에 보여 주고 같은 사건끼리 묶게 한 뒤, 묶음마다 점수가 가장 높은 기사 하나만 남겨요.
 - **세 칸 요약** — pydantic `Summary(what, why, action)` 구조화 출력이라 칸이 빠지거나 형식이 흐트러지지 않아요.
 - **두 겹 검수** — 요약에 나온 숫자가 원문에 없으면 LLM을 부르기 전에 바로 탈락시키고, 그다음 LLM이 주장 하나하나를 원문과 대조해요. 떨어진 자리는 예비 후보로 채워요.
 - **멈추면 알아채기** — 실패하면 `main.py`가 Discord로 경보를 보내고 Actions가 빨간불이 돼요. 아예 안 돌았을 때는 08:30 `watchdog` 워크플로가 "오늘 성공한 실행이 없다"고 알려요.
