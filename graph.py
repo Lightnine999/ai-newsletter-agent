@@ -8,7 +8,7 @@ class Brief(TypedDict):
     picked:    list                             # ② 선별해 남긴 다섯 건
     drafted:   Annotated[list, operator.add]    # ③ 취재한 초안 — 워커들이 나눠 채운다
     verified:  list                             # ④ 검수를 통과한 것 — 줄이는 결과라 리듀서 없음 (31장)
-    log:     Annotated[list, operator.add]    # 무슨 일이 있었는지
+    log:       Annotated[list, operator.add]    # 무슨 일이 있었는지
 
 # ── 2부 · collect ─────────────────────────────────────────────
 import feedparser, requests, re
@@ -24,13 +24,17 @@ SOURCES = [
     ("AI타임스", "https://www.aitimes.com/rss/allArticle.xml"),
 ]
 
-TRACKING = ("utm_", "fbclid", "gclid", "ref")   # 추적용 꼬리표로 보는 이름
+TRACKING = {"fbclid", "gclid", "ref"}           # 추적용 꼬리표로 보는 이름 (정확히 일치)
+
+def is_tracking(key):
+    k = key.lower()
+    return k.startswith("utm_") or k in TRACKING   # utm_* 만 접두어로, 나머지는 이름이 같을 때만
 
 def url_key(url):
     # ? 뒤를 통째로 떼면 AI타임스(?idxno=번호)처럼 주소의 핵심이 사라진다
     # → 추적용 꼬리표만 떼고 나머지 쿼리는 남긴다
     p = urlsplit(url)
-    query = [(k, v) for k, v in parse_qsl(p.query) if not k.lower().startswith(TRACKING)]
+    query = [(k, v) for k, v in parse_qsl(p.query) if not is_tracking(k)]
     return urlunsplit((p.scheme, p.netloc, p.path.rstrip("/"), urlencode(query), ""))
 
 def strip_tags(s):

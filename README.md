@@ -1,57 +1,74 @@
 # AI 아침 브리핑 에이전트
 
-매일 아침 7시 30분(KST), 그날 나온 AI 기사 중 개발팀이 알아야 할 5건을 골라 세 칸으로 요약하고 Discord로 보내는 LangGraph 에이전트예요.
+매일 아침 7시 30분(KST), 그날 나온 AI 기사 중 개발팀이 알아야 할 5건을 골라 세 칸으로 요약하고 Discord로 보내는 LangGraph 에이전트예요. AIFFEL 노드 "매일 아침 AI 소식 5건을 골라 보내는 에이전트"를 1부부터 7부까지 따라 만들었어요.
 
 ```
-START → collect → select → report → verify → publish → END
-                             ↑          │
-                             └──────────┘  검수 탈락 시 예비 후보로 다시 요약
+START → collect → select ─(Send × 기사 수)→ report → verify → publish → END
+                     └──────── 고른 기사가 0건이면 ────────┘
 ```
 
-| 노드 | 하는 일 | 파일 |
+메인은 [graph.py](graph.py)(State·노드 다섯 개·`build()`·`run()`)와 [run.py](run.py)(실행 진입점)예요.
+
+| 노드 | 하는 일 | State 칸 |
+|------|---------|----------|
+| collect | RSS 5곳(OpenAI·DeepMind·TechCrunch·The Verge·AI타임스)에서 최근 24시간 글만 모으고, 같은 주소는 한 번만 남겨요. 응답 없는 소스는 건너뛰고 이름을 로그에 적어요 | `collected` |
+| select | 40건 묶음마다 8건(예선), 살아남은 것을 한 화면에 놓고 5건(본선). 구조화된 출력으로 이유와 사건 라벨을 받아요 | `picked` |
+| report | `Send`로 기사마다 워커를 띄워요. 원문 본문이 600자 미만이면 빼고, headline·summary·why 세 칸으로 요약해요 | `drafted` (이어 붙이기) |
+| verify | 요약을 쓴 호출과 따로 부른 LLM이 headline·summary를 원문과 뜻으로 대조해요. 떨어진 건 버리고 출처를 로그에 남겨요 | `verified` |
+| publish | Discord embed 카드로 보내요. `DRY_RUN` 기본은 1(보내지 않음), 0건이면 "오늘은 조용합니다" 한 장 | 바깥 |
+
+소스 선택과 관문은 [docs/sources.md](docs/sources.md)에 정리했어요.
+
+실행 로그 예시:
+
+```
+① 수집   24시간 time window · 72건
+② 선별   72 → 예선 16 → 5건
+   취재 제외 AI타임스 · 본문 475자
+④ 검수   4 → 4건
+⑤ 발행   4건 · 보냄
+```
+
+## 노드와 다르게 넣은 것
+
+| 위치 | 바꾼 것 | 이유 |
 |------|---------|------|
-| collect | RSS 8곳 + Hacker News API에서 모으고 관문으로 거름 | `newsletter/nodes/collect.py`, `newsletter/sources.py` |
-| select | 규칙 예선 → LLM 채점 → 같은 소식 묶기 → 규칙 결선(소스당 2건, 소식당 1건)으로 5건 + 예비 3건 | `newsletter/nodes/select.py` |
-| report | 원문 본문(trafilatura)을 읽고 **무슨 일 / 왜 중요 / 우리 팀은** 세 칸 요약 | `newsletter/nodes/report.py` |
-| verify | 숫자 대조(규칙) + 주장 대조(LLM)로 원문에 없는 내용 걸러냄 | `newsletter/nodes/verify.py` |
-| publish | Discord 웹훅 전송 + `output/날짜.md` 저장 | `newsletter/nodes/publish.py` |
-
-> **메인은 [graph.py](graph.py) + [run.py](run.py)예요.** 강의 노드 흐름대로 `Brief` State(`hours·collected·picked·drafted·verified·log`)와 빈 노드 다섯 개에서 시작해 1~7부를 따라 채웠어요. `graph.py`엔 State·노드·`build()`·`run()`이, `run.py`엔 실행 진입점만 있어요. 매일 아침 GitHub Actions가 돌리는 것도 `run.py`예요.
-> 위 표의 `newsletter/` 패키지는 먼저 만들어 본 완성본이라 참고용으로 남겨 둬요.
-
-자료 수집 방식 비교와 관문 설명은 [docs/sources.md](docs/sources.md)에 있어요.
-
-## 설계 포인트
-
-- **LLM은 점수만, 선택은 코드가** — select에서 LLM은 기사마다 `dev_impact·novelty·credibility`를 매기고, 최종 5건은 코드가 총점과 다양성 규칙으로 골라요. 그래서 결과를 재현하고 테스트하기 쉬워요. LLM이 없는 id를 지어내면 버려요.
-- **같은 소식은 한 번만** — 매체마다 제목이 달라서 URL·제목 비교로는 중복을 못 잡아요(실제로 Genie 4 발표가 TechCrunch와 The Verge에서 둘 다 뽑혔어요). 그래서 상위 후보를 한 번에 LLM에 보여 주고 같은 사건끼리 묶게 한 뒤, 묶음마다 점수가 가장 높은 기사 하나만 남겨요.
-- **세 칸 요약** — pydantic `Summary(what, why, action)` 구조화 출력이라 칸이 빠지거나 형식이 흐트러지지 않아요.
-- **두 겹 검수** — 요약에 나온 숫자가 원문에 없으면 LLM을 부르기 전에 바로 탈락시키고, 그다음 LLM이 주장 하나하나를 원문과 대조해요. 떨어진 자리는 예비 후보로 채워요.
-- **멈추면 알아채기** — 실패하면 `main.py`가 Discord로 경보를 보내고 Actions가 빨간불이 돼요. 아예 안 돌았을 때는 08:30 `watchdog` 워크플로가 "오늘 성공한 실행이 없다"고 알려요.
+| `graph.py` `url_key` | 주소 비교 때 `?` 뒤를 통째로 떼지 않고 추적용 꼬리표(`utm_*`, `fbclid`, `gclid`, `ref`)만 떼요 | AI타임스 주소는 기사 번호가 `?idxno=` 뒤에 있어서 50건이 1건으로 합쳐졌어요 |
+| `graph.py` `fan_report` | 고른 기사가 0건이면 `verify`로 바로 가요 | 노드 44장의 고치는 법. 0건인 날에도 "오늘은 조용합니다"가 가야 멈춤과 구분돼요 |
+| `graph.py` `publish` | ⑤ 줄을 `보냄` / `dry-run` / `실패` 세 가지로 적어요 | 발송 실패가 `dry-run`으로 찍혀 헷갈렸어요 |
+| `run.py` | 보내야 하는 실행인데 못 보냈으면 `exit 1`로 끝나요 | 노드 41장 ①: Discord가 거절해도 실행이 성공으로 끝나 실패 메일이 안 왔어요 |
 
 ## 로컬 실행
 
 ```bash
-uv venv && uv pip install -r requirements.txt pytest
-cp .env.example .env   # 키 채우기
-.venv/bin/python -m pytest -q          # 네트워크·키 없이 도는 테스트
-.venv/bin/python run.py --dry-run     # 보내지 않고 로그와 보낼 카드만 출력
-DRY_RUN=0 .venv/bin/python run.py     # 실제로 Discord에 보냄 (.env의 DRY_RUN=1이 기본값)
+uv venv && uv pip install -r requirements.txt
+cp .env.example .env                 # OPENAI_API_KEY, DISCORD_WEBHOOK_URL 채우기
+.venv/bin/python run.py --dry-run    # 보내지 않고 로그와 보낼 카드만 출력
+DRY_RUN=0 .venv/bin/python run.py    # 실제로 Discord에 보냄 (.env의 DRY_RUN=1이 기본값)
 ```
 
 ## 매일 아침 받아 보기 (GitHub Actions)
 
-1. Discord 채널 설정 → 연동 → 웹후크 만들기 → URL 복사
-2. 저장소 Settings → Secrets and variables → Actions에 등록
-   - `OPENAI_API_KEY`, `DISCORD_WEBHOOK_URL` (필수)
+1. Discord 채널 편집 → 연동 → 웹후크 → 새 웹후크 → URL 복사
+2. 저장소 Settings → Secrets and variables → Actions에 `OPENAI_API_KEY`, `DISCORD_WEBHOOK_URL` 등록
 3. Actions 탭 → `매일 브리핑` → Run workflow에서 dry_run을 체크해 한 번 돌려 로그 확인 → 정상이면 체크를 끄고 다시 실행
 
 스케줄은 `30 22 * * *`(UTC) = 매일 07:30 KST예요. 알아둘 점:
 
-- GitHub cron은 붐비는 시간에 몇 분~수십 분 늦을 수 있어요.
-- 공개 저장소에 60일간 커밋이 없으면 스케줄 워크플로가 자동으로 꺼져요. 꺼지면 watchdog도 같이 멈추니, Actions 탭에서 다시 켜 주세요.
+- GitHub cron은 붐비는 시간에 몇 분에서 한 시간까지 늦을 수 있어요.
+- 공개 저장소에 60일간 커밋이 없으면 스케줄 워크플로가 자동으로 꺼져요. Actions 탭에서 다시 켜 주세요.
+- `watchdog` 워크플로(노드에는 없는 추가 장치)가 08:30에 "최근 3시간 안에 성공한 실행이 있나"를 보고, 없으면 같은 웹훅으로 알려요. 07:30 실행이 한 시간 넘게 밀리면 잘못 울릴 수 있고, 웹훅이 고장 난 날엔 이 알림도 막혀요.
 
-## 한계
+## 아직 못 하는 것 (노드 44장)
 
-- 숫자 대조는 표기가 바뀌면(예: `$1 billion` → `10억 달러`) 근거가 있어도 탈락시킬 수 있어요. 프롬프트에서 "숫자는 원문 그대로"를 요구하는 이유예요.
-- 피드 목록과 키워드는 `newsletter/sources.py`에서 손으로 관리해요.
+- 평가셋이 없어 프롬프트를 바꾼 뒤 나빠졌는지 몰라요.
+- 발행 전 사람 승인이 없어요.
+- 실행 기록(소스별 건수, 단계별 탈락)이 파일로 쌓이지 않아요.
+- 24장의 한글 검사가 연결돼 있지 않아요.
+- 같은 사건 중복은 프롬프트에만 맡겨요. event 라벨을 Counter로 세거나 매체별 상한을 두는 건(20장) 아직 안 했어요. 실제로 AI타임스가 5건 중 3건 넘게 차지한 날이 있었어요.
+- 403·404 응답 소스는 "응답 없음"에 안 잡혀요(14장의 `.raise_for_status()`를 아직 안 붙였어요).
+- AI타임스 피드는 시각을 시간대 없이 한국 시간으로 적어서, UTC로 읽으면 9시간 미래 글로 보여요.
+
+## 참고용: `newsletter/` 패키지
+
+노드를 따라가기 전에 먼저 만들어 본 완성본이에요. 기사마다 점수 매기기, 숫자 글자 대조, 되돌아가는 검수 엣지처럼 **노드가 비교 끝에 접은 방식**이 들어 있어서 비교용으로만 남겨 뒀어요. 매일 실행에는 쓰지 않아요. 테스트는 `uv pip install pytest` 후 `.venv/bin/python -m pytest -q`로 돌려요.
