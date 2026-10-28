@@ -16,6 +16,9 @@ START → collect → select → report → verify → publish → END
 | verify | 숫자 대조(규칙) + 주장 대조(LLM)로 원문에 없는 내용 걸러냄 | `newsletter/nodes/verify.py` |
 | publish | Discord 웹훅 전송 + `output/날짜.md` 저장 | `newsletter/nodes/publish.py` |
 
+> **메인은 [graph.py](graph.py) + [run.py](run.py)예요.** 강의 노드 흐름대로 `Brief` State(`hours·collected·picked·drafted·verified·log`)와 빈 노드 다섯 개에서 시작해 1~7부를 따라 채웠어요. `graph.py`엔 State·노드·`build()`·`run()`이, `run.py`엔 실행 진입점만 있어요. 매일 아침 GitHub Actions가 돌리는 것도 `run.py`예요.
+> 위 표의 `newsletter/` 패키지는 먼저 만들어 본 완성본이라 참고용으로 남겨 둬요.
+
 자료 수집 방식 비교와 관문 설명은 [docs/sources.md](docs/sources.md)에 있어요.
 
 ## 설계 포인트
@@ -32,7 +35,8 @@ START → collect → select → report → verify → publish → END
 uv venv && uv pip install -r requirements.txt pytest
 cp .env.example .env   # 키 채우기
 .venv/bin/python -m pytest -q          # 네트워크·키 없이 도는 테스트
-.venv/bin/python -m newsletter.main    # DRY_RUN=1이면 Discord 대신 output/에만 저장
+.venv/bin/python run.py --dry-run     # 보내지 않고 로그와 보낼 카드만 출력
+DRY_RUN=0 .venv/bin/python run.py     # 실제로 Discord에 보냄 (.env의 DRY_RUN=1이 기본값)
 ```
 
 ## 매일 아침 받아 보기 (GitHub Actions)
@@ -40,8 +44,7 @@ cp .env.example .env   # 키 채우기
 1. Discord 채널 설정 → 연동 → 웹후크 만들기 → URL 복사
 2. 저장소 Settings → Secrets and variables → Actions에 등록
    - `OPENAI_API_KEY`, `DISCORD_WEBHOOK_URL` (필수)
-   - `DISCORD_ALERT_WEBHOOK_URL` (선택, 경보를 다른 채널로)
-3. Actions 탭 → `daily-newsletter` → Run workflow로 한 번 수동 실행해 확인
+3. Actions 탭 → `매일 브리핑` → Run workflow에서 dry_run을 체크해 한 번 돌려 로그 확인 → 정상이면 체크를 끄고 다시 실행
 
 스케줄은 `30 22 * * *`(UTC) = 매일 07:30 KST예요. 알아둘 점:
 
