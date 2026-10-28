@@ -11,7 +11,7 @@ START → collect → select ─(Send × 기사 수)→ report → verify → pu
 
 | 노드 | 하는 일 | State 칸 |
 |------|---------|----------|
-| collect | RSS 5곳(OpenAI·DeepMind·TechCrunch·The Verge·AI타임스)에서 최근 24시간 글만 모으고, 같은 주소는 한 번만 남겨요. 응답 없는 소스는 건너뛰고 이름을 로그에 적어요 | `collected` |
+| collect | RSS 13곳 + Hacker News API + Anthropic 사이트맵, 모두 15곳에서 최근 24시간 글만 모으고, 같은 주소는 한 번만 남겨요. 응답 없는(403 포함) 소스는 건너뛰고 이름을 로그에 적어요 | `collected` |
 | select | 40건 묶음마다 8건(예선), 살아남은 것을 한 화면에 놓고 5건(본선). 구조화된 출력으로 이유와 사건 라벨을 받아요 | `picked` |
 | report | `Send`로 기사마다 워커를 띄워요. 원문 본문이 600자 미만이면 빼고, headline·summary·why 세 칸으로 요약해요 | `drafted` (이어 붙이기) |
 | verify | 요약을 쓴 호출과 따로 부른 LLM이 headline·summary를 원문과 뜻으로 대조해요. 떨어진 건 버리고 출처를 로그에 남겨요 | `verified` |
@@ -37,6 +37,7 @@ START → collect → select ─(Send × 기사 수)→ report → verify → pu
 | `graph.py` `fan_report` | 고른 기사가 0건이면 `verify`로 바로 가요 | 노드 44장의 고치는 법. 0건인 날에도 "오늘은 조용합니다"가 가야 멈춤과 구분돼요 |
 | `graph.py` `publish` | ⑤ 줄을 `보냄` / `dry-run` / `실패` 세 가지로 적어요 | 발송 실패가 `dry-run`으로 찍혀 헷갈렸어요 |
 | `run.py` | 보내야 하는 실행인데 못 보냈으면 `exit 1`로 끝나요 | 노드 41장 ①: Discord가 거절해도 실행이 성공으로 끝나 실패 메일이 안 왔어요 |
+| `graph.py` `SOURCES` 외 | 노드 13장의 5곳에서 15곳으로 늘리고, HN API와 Anthropic(사이트맵 + 글 페이지 발행일)을 더했어요. 피드 요청에 `raise_for_status()`를 붙였어요 | AI타임스가 403으로 막힌 날 72건이 20건으로 줄었어요. 8장 실습 데이터(11곳·하루 50~120건)에 맞추고, 14장대로 403도 로그에 남게 했어요 |
 
 ## 로컬 실행
 
@@ -66,7 +67,7 @@ DRY_RUN=0 .venv/bin/python run.py    # 실제로 Discord에 보냄 (.env의 DRY_
 - 실행 기록(소스별 건수, 단계별 탈락)이 파일로 쌓이지 않아요.
 - 24장의 한글 검사가 연결돼 있지 않아요.
 - 같은 사건 중복은 프롬프트에만 맡겨요. event 라벨을 Counter로 세거나 매체별 상한을 두는 건(20장) 아직 안 했어요. 실제로 AI타임스가 5건 중 3건 넘게 차지한 날이 있었어요.
-- 403·404 응답 소스는 "응답 없음"에 안 잡혀요(14장의 `.raise_for_status()`를 아직 안 붙였어요).
+- Anthropic 글은 발행일이 날짜까지만 있어서 24시간 창이 아니라 '어제·오늘 날짜'로 걸러요.
 - AI타임스 피드는 시각을 시간대 없이 한국 시간으로 적어서, UTC로 읽으면 9시간 미래 글로 보여요.
 
 ## 참고용: `newsletter/` 패키지

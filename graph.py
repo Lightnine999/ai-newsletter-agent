@@ -11,18 +11,33 @@ class Brief(TypedDict):
     log:       Annotated[list, operator.add]    # 무슨 일이 있었는지
 
 # ── 2부 · collect ─────────────────────────────────────────────
-import feedparser, requests, re
+import feedparser, requests, re, trafilatura
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 UA = {"User-Agent": "Mozilla/5.0 (newsletter-agent-course)"}
+# 8장 기준으로 잰 뒤 10장 관문(본문·생존·접근)을 넘은 곳만 둔다. 측정 결과는 docs/sources.md
 SOURCES = [
-    ("OpenAI", "https://openai.com/blog/rss.xml"),
+    # 1차 소스 · 사건 당사자의 공식 발표 (9장)
+    ("OpenAI", "https://openai.com/news/rss.xml"),
     ("DeepMind", "https://deepmind.google/blog/rss.xml"),
+    ("Hugging Face", "https://huggingface.co/blog/feed.xml"),
+    ("Google AI", "https://blog.google/technology/ai/rss/"),
+    # 2차 소스 · 영어
     ("TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/"),
     ("The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("Ars Technica", "https://arstechnica.com/ai/feed/"),
+    ("Wired", "https://www.wired.com/feed/tag/ai/latest/rss"),
+    ("The Decoder", "https://the-decoder.com/feed/"),
+    ("Simon Willison", "https://simonwillison.net/atom/everything/"),
+    # 2차 소스 · 한국어 (AI타임스가 막혀도 한국어 소스가 남게 둘 이상 둔다)
     ("AI타임스", "https://www.aitimes.com/rss/allArticle.xml"),
+    ("전자신문", "https://rss.etnews.com/Section901.xml"),
+    ("ZDNet Korea", "https://feeds.feedburner.com/zdkorea"),
 ]
+# RSS가 없는 곳은 다른 길로 가져온다 (7장 사다리: ① 공식 API, 사이트맵)
+HN_API = "https://hn.algolia.com/api/v1/search_by_date"
+ANTHROPIC_SITEMAP = "https://www.anthropic.com/sitemap.xml"
 
 TRACKING = {"fbclid", "gclid", "ref"}           # 추적용 꼬리표로 보는 이름 (정확히 일치)
 
@@ -44,25 +59,68 @@ def published_at(entry):
     t = entry.get("published_parsed")
     return datetime(*t[:6], tzinfo=timezone.utc) if t else None
 
+def rss_entries(url, cutoff):
+    r = requests.get(url, headers=UA, timeout=20)
+    r.raise_for_status()                        # 14장: 403·404도 '응답 없음'으로 잡는다
+    return [{"title": e.title, "url": e.link, "at": published_at(e),
+             "summary": strip_tags(e.get("summary", ""))[:300]}
+            for e in feedparser.parse(r.content).entries]
+
+def hn_entries(cutoff):                        # 7장 ① 공식 API · 추천 50 이상 AI 글
+    r = requests.get(HN_API, timeout=20, params={
+        "query": "AI", "tags": "story", "hitsPerPage": 50,
+        "numericFilters": f"created_at_i>{int(cutoff.timestamp())},points>50"})
+    r.raise_for_status()
+    return [{"title": h["title"], "url": h["url"], "summary": "",
+             "at": datetime.fromtimestamp(h["created_at_i"], tz=timezone.utc)}
+            for h in r.json()["hits"] if h.get("url")]
+
+def anthropic_entries(cutoff):
+    # RSS가 없어서 사이트맵으로 후보를 찾는다. 사이트맵 날짜는 '수정일'이라
+    # 오래된 글도 고치면 새 글처럼 보인다 → 글 페이지에 적힌 발행일로 다시 거른다
+    r = requests.get(ANTHROPIC_SITEMAP, headers=UA, timeout=20)
+    r.raise_for_status()
+    found = re.findall(r"<loc>(https://www\.anthropic\.com/news/[^<]+)</loc>\s*<lastmod>([^<]+)</lastmod>", r.text)
+    out = []
+    for url, lastmod in found:
+        if datetime.fromisoformat(lastmod.replace("Z", "+00:00")) < cutoff:
+            continue                            # 이 기간에 손대지 않은 글은 페이지를 열지 않는다
+        page = requests.get(url, headers=UA, timeout=20).text
+        meta = trafilatura.extract_metadata(page)
+        if not meta or not meta.date:
+            continue
+        day = datetime.fromisoformat(meta.date).replace(tzinfo=timezone.utc)
+        if day.date() < cutoff.date():          # 발행일은 날짜까지만 있어서 날짜로 비교한다
+            continue
+        out.append({"title": meta.title or url, "url": url, "at": day,
+                    "summary": (meta.description or "")[:300]})
+    return out
+
+def all_sources():
+    yield from ((name, lambda cutoff, u=url: rss_entries(u, cutoff)) for name, url in SOURCES)
+    yield "Hacker News", hn_entries
+    yield "Anthropic", anthropic_entries
+
 def collect(s: dict) -> dict:                  # ① 자료 수집 — 빈 노드를 갈아 끼운다
     cutoff = datetime.now(timezone.utc) - timedelta(hours=s["hours"])
     items, dead, seen = [], [], set()
-    for name, url in SOURCES:
+    for name, fetch in all_sources():
         try:
-            feed = feedparser.parse(requests.get(url, headers=UA, timeout=20).content)
+            entries = fetch(cutoff)
         except Exception:
             dead.append(name)                   # 한 곳이 죽어도 나머지는 계속
             continue
-        for e in feed.entries:
-            at = published_at(e)
-            if not at or at < cutoff:           # time window 밖이거나 날짜가 없으면 버린다
+        for e in entries:
+            at = e["at"]
+            if not at:                          # 날짜가 없으면 버린다
                 continue
-            key = url_key(e.link)               # 추적용 꼬리표만 떼고 비교
+            if at < cutoff and name != "Anthropic":  # time window 밖은 버린다 (Anthropic은 날짜 단위라 위에서 걸렀다)
+                continue
+            key = url_key(e["url"])             # 추적용 꼬리표만 떼고 비교
             if key in seen:
                 continue
             seen.add(key)
-            items.append({"title": e.title, "url": e.link, "source": name, "at": at,
-                          "summary": strip_tags(e.get("summary", ""))[:300]})
+            items.append({**e, "source": name})
     return {"collected": items,
             "log": [f"① 수집   {s['hours']}시간 time window · {len(items)}건"
                     + (f" · 응답 없음 {dead}" if dead else "")]}
