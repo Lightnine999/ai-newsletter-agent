@@ -1,0 +1,32 @@
+name: watchdog
+
+# 에이전트가 "실패"하면 main.py가 직접 경보를 보낸다.
+# 하지만 아예 "안 돌면"(스케줄 누락·비활성화·러너 장애) 아무도 모른다.
+# 그래서 08:30 KST에 오늘 성공한 실행이 있는지 따로 확인한다.
+on:
+  schedule:
+    - cron: "30 23 * * *" # 08:30 KST
+  workflow_dispatch:
+
+permissions:
+  actions: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 오늘 성공 실행이 있는지 확인
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBHOOK: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL || secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          since=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+          ok=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success \
+                 --created ">=$since" --json databaseId --jq 'length')
+          echo "최근 3시간 성공 실행: $ok"
+          if [ "$ok" = "0" ]; then
+            curl -sS -H 'Content-Type: application/json' \
+              -d "{\"content\":\"⏰ 오늘 아침 뉴스레터가 발행되지 않았어요. Actions 탭을 확인하세요: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions\"}" \
+              "$WEBHOOK"
+            exit 1
+          fi
