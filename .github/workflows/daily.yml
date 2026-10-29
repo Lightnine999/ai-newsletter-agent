@@ -37,7 +37,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           since=$(date -u -d "$(TZ=Asia/Seoul date +%Y-%m-%d) 00:00 +0900" +%Y-%m-%dT%H:%M:%SZ)
-          sent=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success \
+          # 스케줄로 보낸 것만 센다. 손으로 보낸 실행(시험·대신 발송)이 있어도 예약 시간에는 올린다
+          sent=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success --event schedule \
                    --created ">=$since" --json databaseId,displayTitle \
                    --jq "[.[] | select(.displayTitle == \"브리핑 발송\" and .databaseId != $GITHUB_RUN_ID)] | length")
           echo "오늘(KST) 이미 보낸 실행: $sent"
