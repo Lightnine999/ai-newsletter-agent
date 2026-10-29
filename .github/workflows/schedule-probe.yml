@@ -1,0 +1,16 @@
+name: 스케줄 시험 (임시)
+# 2026-10-29 07:30 스케줄이 울리지 않은 원인 확인용. 이 저장소에서 schedule 이벤트가
+# 실제로 들어오는지만 본다. 확인이 끝나면 지운다. 아무것도 보내지 않는다.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "schedule 이벤트 수신 $(date -u +%FT%TZ)"
