@@ -5,6 +5,9 @@ name: 스케줄 시험 (임시)
 on:
   schedule:
     - cron: "*/5 * * * *"
+  push:                           # 자동 이벤트 자체가 들어오는지 가리기 위한 대조군
+    paths:
+      - ".github/workflows/schedule-probe.yml"
 
 permissions: {}
 
