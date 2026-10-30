@@ -20,13 +20,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WEBHOOK: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL || secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          since=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+          today=$(TZ=Asia/Seoul date +%Y-%m-%d)
+          since=$(date -u -d "$today 07:30 +0900" +%Y-%m-%dT%H:%M:%SZ)
+          deadline=$(date -u -d "$today 08:30 +0900" +%Y-%m-%dT%H:%M:%SZ)
           ok=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success \
-                 --created ">=$since" --json databaseId --jq 'length')
-          echo "최근 3시간 성공 실행: $ok"
+                 --created ">=$since" --limit 100 --json displayTitle,updatedAt \
+                 --jq "[.[] | select(.displayTitle == \"브리핑 발송\" and .updatedAt <= \"$deadline\")] | length")
+          echo "08:30까지 완료된 아침 발송: $ok"
           if [ "$ok" = "0" ]; then
-            curl -sS -H 'Content-Type: application/json' \
-              -d "{\"content\":\"⏰ 오늘 아침 뉴스레터가 발행되지 않았어요. Actions 탭을 확인하세요: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions\"}" \
+            curl --fail-with-body -sS -H 'Content-Type: application/json' \
+              -d "{\"content\":\"⏰ 오늘 아침 뉴스레터가 08:30까지 발행되지 않았어요. Actions 탭을 확인하세요: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions\"}" \
               "$WEBHOOK"
             exit 1
           fi
