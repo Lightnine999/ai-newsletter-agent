@@ -30,15 +30,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20           # ③ 멈춰 있는 실행을 20분에서 끊는다
     steps:
-      - name: 오늘 이미 보냈는지 확인 (스케줄 실행만)
+      - name: 오늘 이미 보냈는지 확인 (실제 발송만)
         id: guard
-        if: github.event_name == 'schedule'
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           since=$(date -u -d "$(TZ=Asia/Seoul date +%Y-%m-%d) 00:00 +0900" +%Y-%m-%dT%H:%M:%SZ)
-          # 스케줄로 보낸 것만 센다. 손으로 보낸 실행(시험·대신 발송)이 있어도 예약 시간에는 올린다
-          sent=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success --event schedule \
+          # 외부 감시가 수동 호출한 발송도 포함하여 지연된 예약과 중복을 막는다
+          sent=$(gh run list -R "$GITHUB_REPOSITORY" --workflow daily.yml --status success --limit 100 \
                    --created ">=$since" --json databaseId,displayTitle \
                    --jq "[.[] | select(.displayTitle == \"브리핑 발송\" and .databaseId != $GITHUB_RUN_ID)] | length")
           echo "오늘(KST) 이미 보낸 실행: $sent"
